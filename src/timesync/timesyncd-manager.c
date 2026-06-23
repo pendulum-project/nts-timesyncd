@@ -1542,7 +1542,33 @@ static int manager_nts_handshake_setup(Manager *m) {
                 return log_error_errno(r, "Failed to arm NTS key exchange timeout timer: %m");
         }
 
-        return sd_event_add_io(m->event, &m->event_receive, m->server_socket, EPOLLIN|EPOLLOUT, manager_nts_obtain_agreement, m);
+        /* Begin waiting for connect() to complete, then hand off to manager_nts_handshake_wait() */
+        return sd_event_add_io(m->event, &m->event_receive, m->server_socket, EPOLLOUT, manager_nts_obtain_agreement, m);
+}
+
+/* Map TLS direction to epoll event type we're waiting for */
+static uint32_t manager_nts_tls_events(NTS_TLS_Direction direction) {
+        return direction == NTS_TLS_WANT_WRITE ? (uint32_t) EPOLLOUT : (uint32_t) EPOLLIN;
+}
+
+/* Central yield point for the handshake state machine
+ *
+ * Set the awaited event to whichever one we're actually blocked on.
+ * Since the source is not edge-triggered (no EPOLLET), it keeps invoking us while
+ * the awaited event stays ready, so arming the wrong one would busy-spin. */
+static int manager_nts_handshake_wait(Manager *m, uint32_t events) {
+        int r;
+
+        assert(m);
+        assert(m->event_receive);
+
+        r = sd_event_source_set_io_events(m->event_receive, events);
+        if (r < 0) {
+                log_warning_errno(r, "Failed to update NTS key exchange I/O events: %m");
+                return manager_connect(m);
+        }
+
+        return 1;
 }
 
 static int manager_nts_obtain_agreement(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
@@ -1559,17 +1585,20 @@ static int manager_nts_obtain_agreement(sd_event_source *source, int fd, uint32_
         switch (m->nts_handshake_state) {
                 struct sockaddr *addr;
                 uint8_t *bufp;
-                ssize_t size;
+                ssize_t left;
+                NTS_TLS_Direction direction;
 
         case NTS_HANDSHAKE_CONNECTING:
                 addr = &m->current_server_address->sockaddr.sa;
 
-                r = connect(m->server_socket, addr, m->current_server_address->socklen);
-                if (r < 0) {
+                if (connect(m->server_socket, addr, m->current_server_address->socklen) < 0) {
                         if (errno == EALREADY)
-                                return 1;
-                        else if (errno != EISCONN)
-                                return -errno;
+                                /* Connection still in progress, wait for the socket to become writable. */
+                                return manager_nts_handshake_wait(m, EPOLLOUT);
+                        if (errno != EISCONN) {
+                                log_warning_errno(errno, "Failed to connect to NTS key exchange server: %m");
+                                return manager_connect(m);
+                        }
                 }
 
                 (void) socket_set_option(m->server_socket, addr->sa_family, IP_TOS, IPV6_TCLASS, IPTOS_DSCP_EF);
@@ -1587,9 +1616,9 @@ static int manager_nts_obtain_agreement(sd_event_source *source, int fd, uint32_
                 _fallthrough_;
 
         case NTS_HANDSHAKE_TLS:
-                r = NTS_TLS_handshake(m->nts_handshake);
+                r = NTS_TLS_handshake(m->nts_handshake, &direction);
                 if (r == 0)
-                        return 1;
+                        return manager_nts_handshake_wait(m, manager_nts_tls_events(direction));
 
                 if (r < 0) {
                         log_warning_errno(r, "Could not set up TLS session with server: %m");
@@ -1627,18 +1656,21 @@ static int manager_nts_obtain_agreement(sd_event_source *source, int fd, uint32_
                 _fallthrough_;
 
         case NTS_HANDSHAKE_TX:
-                size = m->nts_request_size - m->nts_bytes_processed;
+                left = m->nts_request_size - m->nts_bytes_processed;
                 bufp = m->nts_packet_buffer + m->nts_bytes_processed;
 
-                r = NTS_TLS_write(m->nts_handshake, bufp, size);
-                assert(r <= size);
-
+                r = NTS_TLS_write(m->nts_handshake, bufp, left, &direction);
                 if (r < 0) {
                         log_warning_errno(r, "Error sending NTS key request: %m");
                         return manager_connect(m);
-                } else if (r < size) {
+                }
+
+                assert(r <= left);
+                if (r < left) {
                         m->nts_bytes_processed += r;
-                        return 1;
+                        /* Either the write blocked (r == 0, direction tells us which readiness to wait for)
+                         * or only part of the request went out and we still need the socket to be writable. */
+                        return manager_nts_handshake_wait(m, r == 0 ? manager_nts_tls_events(direction) : (uint32_t) EPOLLOUT);
                 }
 
                 /* NTS request sent, read the reply */
@@ -1647,29 +1679,40 @@ static int manager_nts_obtain_agreement(sd_event_source *source, int fd, uint32_
                 _fallthrough_;
 
         case NTS_HANDSHAKE_RX:
-                size = sizeof(m->nts_packet_buffer) - m->nts_bytes_processed;
+                left = sizeof(m->nts_packet_buffer) - m->nts_bytes_processed;
+                if (left == 0) {
+                        /* The buffer is full but NTS_decode_response() still wants more: the server sent an
+                         * over-long or un-terminable response. Reject it instead of spinning on a 0-length
+                         * read that can never make progress. */
+                        log_warning("NTS key exchange response exceeds %zu bytes, rejecting.", sizeof(m->nts_packet_buffer));
+                        return manager_connect(m);
+                }
                 bufp = m->nts_packet_buffer + m->nts_bytes_processed;
-                r = NTS_TLS_read(m->nts_handshake, bufp, size);
-                assert(r <= size);
 
+                r = NTS_TLS_read(m->nts_handshake, bufp, left, &direction);
                 if (r < 0) {
                         log_warning_errno(r, "Error receiving NTS key response: %m");
                         return manager_connect(m);
                 }
+
+                assert(r <= left);
+
+                /* If the read blocked (r == 0) the direction tells us which readiness to wait for, otherwise
+                 * we simply need more data to arrive, i.e. the socket to become readable. */
+                uint32_t wait_events = r == 0 ? manager_nts_tls_events(direction) : (uint32_t) EPOLLIN;
 
                 m->nts_bytes_processed += r;
 
                 r = NTS_decode_response(m->nts_packet_buffer, m->nts_bytes_processed, &NTS);
                 if (r < 0) {
                         if (NTS.error == NTS_INSUFFICIENT_DATA)
-                                return 1;
+                                return manager_nts_handshake_wait(m, wait_events);
 
                         const char *error = NTS_error_string(NTS.error);
-                        if (error != NULL) {
+                        if (error)
                                 log_warning("NTS Error: %s", error);
-                        } else {
+                        else
                                 log_warning("Unexpected NTS Error code: %d", NTS.error);
-                        }
                         return manager_connect(m);
                 }
 
