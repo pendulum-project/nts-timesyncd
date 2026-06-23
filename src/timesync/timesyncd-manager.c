@@ -111,6 +111,20 @@ static int manager_timeout(sd_event_source *source, usec_t usec, void *userdata)
         return manager_connect(m);
 }
 
+static void manager_set_request_nonce(Manager *m, union ntp_packet *packet) {
+        assert(m);
+        assert(packet);
+
+        /*
+         * Generate a random number as transmit timestamp, to ensure we get
+         * a full 64 bits of entropy to make it hard for off-path attackers
+         * to inject random time to us.
+         * In NTS mode, this is handled through the unique identifier.
+         */
+        random_bytes(&m->request_nonce, sizeof(m->request_nonce));
+        packet->ntpmsg.trans_time = m->request_nonce;
+}
+
 static int manager_send_request(Manager *m) {
         _cleanup_free_ char *pretty = NULL;
 
@@ -201,19 +215,11 @@ static int manager_send_request(Manager *m) {
                         log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Encoded NTS request is too small.");
                         return -EINVAL;
                 }
-        } else {
+        } else
+                manager_set_request_nonce(m, &packet);
 #else
-        {
+        manager_set_request_nonce(m, &packet);
 #endif
-                /*
-                 * Generate a random number as transmit timestamp, to ensure we get
-                 * a full 64 bits of entropy to make it hard for off-path attackers
-                 * to inject random time to us.
-                 * In NTS mode, this is handled through the unique identifier.
-                 */
-                random_bytes(&m->request_nonce, sizeof(m->request_nonce));
-                packet.ntpmsg.trans_time = m->request_nonce;
-        }
 
         server_address_pretty(m->current_server_address, &pretty);
 
