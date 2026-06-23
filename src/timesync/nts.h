@@ -99,6 +99,11 @@ const NTS_AEADParam* NTS_get_param(NTS_AEADAlgorithmType id);
 /* An opaque type that represents the underlying TLS session */
 typedef struct NTS_TLS NTS_TLS;
 
+typedef enum NTS_TLS_Direction {
+        NTS_TLS_WANT_READ,
+        NTS_TLS_WANT_WRITE,
+} NTS_TLS_Direction;
+
 /* Perform key extraction on the TLS session using the specified algorithm_type. C2S and S2C must point to
  * buffers that provide key_capacity amount of bytes.
  *
@@ -123,11 +128,12 @@ int NTS_TLS_setup(const char *hostname, int socket_fd, NTS_TLS **ret);
  *
  * RETURNS
  *      > 0 upon success
- *      0   if it needs to be retried (e.g. if the socket is non-blocking)
+ *      0   the operation would block and must be retried (e.g. on a non-blocking socket);
+ *          *ret_direction is set to the I/O direction to wait for before retrying
  *      < 0 upon permanent failure
  *
  */
-int NTS_TLS_handshake(NTS_TLS *session);
+int NTS_TLS_handshake(NTS_TLS *session, NTS_TLS_Direction *ret_direction);
 
 /* Shuts down a TLS session and frees all resources, closes the associated socket
  * Also sets the NTS_TLS* object itself to NULL.
@@ -141,8 +147,9 @@ NTS_TLS* NTS_TLS_free(NTS_TLS *session);
  *
  * RETURNS
  *      > 0 the number of bytes processed
- *      0   an error occurred, please retry
- *      < 0 an error occurred, do not retry
+ *      0   the operation would block and must be retried (e.g. on a non-blocking socket);
+ *          *ret_direction is set to the I/O direction to wait for before retrying
+ *      < 0 upon permanent failure
  */
-ssize_t NTS_TLS_write(NTS_TLS *session, const void *buffer, size_t size);
-ssize_t NTS_TLS_read(NTS_TLS *session, void *buffer, size_t size);
+ssize_t NTS_TLS_write(NTS_TLS *session, const void *buffer, size_t size, NTS_TLS_Direction *ret_direction);
+ssize_t NTS_TLS_read(NTS_TLS *session, void *buffer, size_t size, NTS_TLS_Direction *ret_direction);

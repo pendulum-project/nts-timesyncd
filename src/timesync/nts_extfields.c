@@ -169,15 +169,19 @@ ssize_t NTS_add_extension_fields(
         return (uint8_t*) buf.iov_base - dest;
 }
 
-/* caller checks memory bounds */
-static void decode_hdr(uint16_t *ret_a, uint16_t *ret_b, const struct iovec data, size_t offset) {
+/* decode a pair of big-endian 16-bit values located at the given offset; returns -EBADMSG when the
+ * buffer is too small to contain them, so callers can't silently forget the bounds check */
+static int decode_hdr(uint16_t *ret_a, uint16_t *ret_b, const struct iovec data, size_t offset) {
         assert(ret_a);
         assert(ret_b);
-        assert(data.iov_len >= NTS_EF_HDR_SIZE + offset);
+
+        if (data.iov_len < NTS_EF_HDR_SIZE + offset)
+                return -EBADMSG;
 
         uint8_t *bytes = (uint8_t*) data.iov_base + offset;
         *ret_a = unaligned_read_be16(bytes);
         *ret_b = unaligned_read_be16(bytes + 2);
+        return 0;
 }
 
 ssize_t NTS_parse_extension_fields(
@@ -186,17 +190,25 @@ ssize_t NTS_parse_extension_fields(
                 const NTS_Query *nts,
                 NTS_Receipt *fields) {
 
+        int r;
+
         assert(src);
-        assert(src_len >= sizeof(struct ntp_msg) && src_len <= NTS_MAX_PACKET_SIZE);
         assert(nts);
         assert(fields);
+
+        /* src_len is derived from the network; guard against an out-of-bounds read rather than
+         * trusting the caller to have validated it */
+        if (src_len < sizeof(struct ntp_msg) || src_len > NTS_MAX_PACKET_SIZE)
+                return -EBADMSG;
 
         struct iovec buf = IOVEC_MAKE(src + sizeof(struct ntp_msg), src_len - sizeof(struct ntp_msg));
         bool processed = false;
 
         while (buf.iov_len >= NTS_EF_HDR_SIZE) {
                 uint16_t type, len;
-                decode_hdr(&type, &len, buf, /* offset= */ 0);
+                r = decode_hdr(&type, &len, buf, /* offset= */ 0);
+                if (r < 0)
+                        return r;
                 if (len < NTS_EF_HDR_SIZE || buf.iov_len < len)
                         return -EBADMSG;
 
@@ -212,8 +224,12 @@ ssize_t NTS_parse_extension_fields(
                         break;
                 case NTS_EF_AuthEncExtFields: {
                         uint16_t nonce_len, ciph_len;
-                        /* the inner authenticator header sits right after the outer EF header */
-                        decode_hdr(&nonce_len, &ciph_len, buf, /* offset= */ NTS_EF_HDR_SIZE);
+                        /* the inner authenticator header sits right after the outer EF header; decode_hdr
+                         * rejects the field if the buffer doesn't hold both headers (the outer len check
+                         * above only guarantees NTS_EF_HDR_SIZE bytes) */
+                        r = decode_hdr(&nonce_len, &ciph_len, buf, /* offset= */ NTS_EF_HDR_SIZE);
+                        if (r < 0)
+                                return r;
                         /* check that the advertised nonce / cipher lengths + header don't exceed the outer length,
                          * which would be a malicious packet; the sizes don't need to match exactly since there may
                          * also be padding here */
@@ -237,7 +253,10 @@ ssize_t NTS_parse_extension_fields(
                         if (plain_len < 0)
                                 return plain_len;
 
-                        assert(plain_len < ciph_len); /* failing this would be a serious error */
+                        /* the plaintext can never be longer than the ciphertext; treat a violation as a
+                         * malformed packet rather than aborting on attacker-influenced input */
+                        if (plain_len >= ciph_len)
+                                return -EBADMSG;
 
                         struct iovec plain = IOVEC_MAKE(plaintext, plain_len);
                         unsigned cookies = 0;
@@ -245,7 +264,9 @@ ssize_t NTS_parse_extension_fields(
 
                         while (plain.iov_len >= NTS_EF_HDR_SIZE) {
                                 uint16_t inner_type, inner_len;
-                                decode_hdr(&inner_type, &inner_len, plain, /* offset= */ 0);
+                                r = decode_hdr(&inner_type, &inner_len, plain, /* offset= */ 0);
+                                if (r < 0)
+                                        return r;
                                 /* check that our buffer has enough room and the advertised length is valid */
                                 if (plain.iov_len < inner_len || inner_len < NTS_EF_HDR_SIZE)
                                         return -EBADMSG;
@@ -261,7 +282,8 @@ ssize_t NTS_parse_extension_fields(
                                         break;
 
                                 default:
-                                        /* ignore any other field */;
+                                        /* ignore any other field */
+                                        break;
                                 }
 
                                 iovec_inc(&plain, inner_len);
@@ -274,7 +296,7 @@ ssize_t NTS_parse_extension_fields(
 
                 default:
                         /* ignore unknown fields */
-                        ;
+                        break;
                 }
 
                 iovec_inc(&buf, len);

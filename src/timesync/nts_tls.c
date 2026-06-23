@@ -46,8 +46,9 @@ int NTS_TLS_extract_keys(
         return 0;
 }
 
-int NTS_TLS_handshake(NTS_TLS *session) {
+int NTS_TLS_handshake(NTS_TLS *session, NTS_TLS_Direction *ret_direction) {
         assert(session);
+        assert(ret_direction);
         SSL *tls = (void*) session;
 
         int result = sym_SSL_connect(tls);
@@ -58,16 +59,20 @@ int NTS_TLS_handshake(NTS_TLS *session) {
         case SSL_ERROR_ZERO_RETURN:
                 return -ECONNRESET;
         case SSL_ERROR_WANT_READ:
+                *ret_direction = NTS_TLS_WANT_READ;
+                return 0;
         case SSL_ERROR_WANT_WRITE:
+                *ret_direction = NTS_TLS_WANT_WRITE;
                 return 0;
         default:
                 return -EIO;
         }
 }
 
-ssize_t NTS_TLS_write(NTS_TLS *session, const void *buffer, size_t size) {
+ssize_t NTS_TLS_write(NTS_TLS *session, const void *buffer, size_t size, NTS_TLS_Direction *ret_direction) {
         assert(session);
         assert(buffer);
+        assert(ret_direction);
 
         /* clamp size to fit in the range required by OpenSSL */
         size = MIN(size, (size_t) INT_MAX);
@@ -79,16 +84,20 @@ ssize_t NTS_TLS_write(NTS_TLS *session, const void *buffer, size_t size) {
 
         switch (sym_SSL_get_error(tls, result)) {
         case SSL_ERROR_WANT_READ:
+                *ret_direction = NTS_TLS_WANT_READ;
+                return 0;
         case SSL_ERROR_WANT_WRITE:
+                *ret_direction = NTS_TLS_WANT_WRITE;
                 return 0;
         default:
                 return -EIO;
         }
 }
 
-ssize_t NTS_TLS_read(NTS_TLS *session, void *buffer, size_t size) {
+ssize_t NTS_TLS_read(NTS_TLS *session, void *buffer, size_t size, NTS_TLS_Direction *ret_direction) {
         assert(session);
         assert(buffer);
+        assert(ret_direction);
 
         /* clamp size to fit in the range required by OpenSSL */
         size = MIN(size, (size_t) INT_MAX);
@@ -100,7 +109,10 @@ ssize_t NTS_TLS_read(NTS_TLS *session, void *buffer, size_t size) {
 
         switch (sym_SSL_get_error(tls, result)) {
         case SSL_ERROR_WANT_READ:
+                *ret_direction = NTS_TLS_WANT_READ;
+                return 0;
         case SSL_ERROR_WANT_WRITE:
+                *ret_direction = NTS_TLS_WANT_WRITE;
                 return 0;
         default:
                 return -EIO;
@@ -156,7 +168,8 @@ int NTS_TLS_setup(
                 return -ENOMEM;
 
         sym_SSL_set_verify(tls, SSL_VERIFY_PEER, /* callback= */ NULL);
-        r = sym_SSL_set1_host(tls, hostname);
+        X509_VERIFY_PARAM *param = sym_SSL_get0_param(tls);
+        r = sym_X509_VERIFY_PARAM_set1_host(param, hostname, 0);
         if (r != 1)
                 return -EIO;
 
