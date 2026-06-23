@@ -261,7 +261,8 @@ ssize_t NTS_parse_extension_fields(
                                         break;
 
                                 default:
-                                        /* ignore any other field */;
+                                        /* ignore any other field */
+                                        break;
                                 }
 
                                 iovec_inc(&plain, inner_len);
@@ -274,7 +275,7 @@ ssize_t NTS_parse_extension_fields(
 
                 default:
                         /* ignore unknown fields */
-                        ;
+                        break;
                 }
 
                 iovec_inc(&buf, len);

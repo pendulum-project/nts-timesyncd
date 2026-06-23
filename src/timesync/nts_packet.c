@@ -89,12 +89,12 @@ static int NTS_decode_record(struct iovec *message, NTS_Record *record) {
                 if (body_size % 2 != 0)
                         goto error;
                 break;
+        case NTS_REC_NTPv4Server:
+        case NTS_REC_NTPv4Cookie:
+                break;
         default:
                 if (is_critical)
                         return -NTS_UNKNOWN_CRIT_RECORD;
-                break;
-        case NTS_REC_NTPv4Server:
-        case NTS_REC_NTPv4Cookie:
                 break;
         }
 
@@ -284,7 +284,7 @@ int NTS_decode_response(uint8_t *buffer, size_t buf_size, NTS_Agreement *respons
 
                 default:
                         /* ignore unknown non-critical fields */
-                        ;
+                        break;
                 }
         }
 
