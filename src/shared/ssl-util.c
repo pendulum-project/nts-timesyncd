@@ -30,7 +30,6 @@ DLSYM_PROTOTYPE(SSL_new) = NULL;
 DLSYM_PROTOTYPE(SSL_read) = NULL;
 DLSYM_PROTOTYPE(SSL_SESSION_free) = NULL;
 DLSYM_PROTOTYPE(SSL_select_next_proto) = NULL;
-DLSYM_PROTOTYPE(SSL_set1_host) = NULL;
 DLSYM_PROTOTYPE(SSL_set_alpn_protos) = NULL;
 DLSYM_PROTOTYPE(SSL_set_bio) = NULL;
 DLSYM_PROTOTYPE(SSL_set_connect_state) = NULL;
@@ -78,7 +77,6 @@ int dlopen_libssl(int log_level) {
                                 DLSYM_ARG(SSL_SESSION_free),
                                 DLSYM_ARG(SSL_select_next_proto),
                                 DLSYM_ARG(SSL_set_alpn_protos),
-                                DLSYM_ARG(SSL_set1_host),
                                 DLSYM_ARG(SSL_set_bio),
                                 DLSYM_ARG(SSL_set_connect_state),
                                 DLSYM_ARG(SSL_set_session),

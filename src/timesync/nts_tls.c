@@ -168,7 +168,8 @@ int NTS_TLS_setup(
                 return -ENOMEM;
 
         sym_SSL_set_verify(tls, SSL_VERIFY_PEER, /* callback= */ NULL);
-        r = sym_SSL_set1_host(tls, hostname);
+        X509_VERIFY_PARAM *param = sym_SSL_get0_param(tls);
+        r = sym_X509_VERIFY_PARAM_set1_host(param, hostname, 0);
         if (r != 1)
                 return -EIO;
 

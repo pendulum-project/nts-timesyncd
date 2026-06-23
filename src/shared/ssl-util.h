@@ -51,7 +51,6 @@ extern DLSYM_PROTOTYPE(SSL_set_connect_state);
 extern DLSYM_PROTOTYPE(SSL_set_session);
 extern DLSYM_PROTOTYPE(SSL_set_alpn_protos);
 extern DLSYM_PROTOTYPE(SSL_set_verify);
-extern DLSYM_PROTOTYPE(SSL_set1_host);
 extern DLSYM_PROTOTYPE(SSL_shutdown);
 extern DLSYM_PROTOTYPE(SSL_write);
 extern DLSYM_PROTOTYPE(TLS_client_method);
