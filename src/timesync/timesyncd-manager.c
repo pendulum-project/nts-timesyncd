@@ -561,7 +561,7 @@ static int manager_receive_response(sd_event_source *source, int fd, uint32_t re
         if (m->nts_cookies->iov_base) {
                 /* verify the NTS extension fields and unique identifier */
                 NTS_Receipt rcpt = {};
-                r = NTS_parse_extension_fields(packet.raw_data, iov.iov_len,
+                r = NTS_parse_extension_fields(packet.raw_data, (size_t) len,
                                                &(NTS_Query) {
                                                      .cookie = *m->nts_cookies,
                                                      .c2s_key = m->nts_keys.c2s,
